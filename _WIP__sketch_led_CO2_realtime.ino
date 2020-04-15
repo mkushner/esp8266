@@ -1,73 +1,102 @@
 #include <Arduino.h>                                       
 #include <SoftwareSerial.h>
 #include <Wire.h>
-#include "SH1106Wire.h"                                
-                                           
-//connect MH-Z19b via digitalPin 
-SoftwareSerial mySerial(13, 15);  //Rx->D8, Tx->D7 - actual pinout here https://chewett.co.uk/blog/1066/pin-numbering-for-wemos-d1-mini-esp8266/
+#include "SH1106Wire.h"
+#include <ESP8266WiFi.h> // http://esp8266.github.io/Arduino/versions/2.0.0/doc/libraries.html#wifi-esp8266wifi-library
+#include <ESP8266WebServer.h>
+#include <ESP8266HTTPClient.h>
 
+const bool DEBUG = true;
+
+// setup WIFI
+const char* ssid = "ssid";
+const char* pass = "pass";
+
+// setup TS
+unsigned long tsChannel = 'channelID'; //TS channel ID
+const char * tsAPIKey = "apikey"; //TS write API key  
+
+ESP8266WebServer server(80);
+int status = WL_IDLE_STATUS;
+String wsDataArray[1000];
+                                           
+// connect MH-Z19b via digitalPin 
+SoftwareSerial mySerial(13, 15);  //Rx->D8, Tx->D7 - actual pinout here https://chewett.co.uk/blog/1066/pin-numbering-for-wemos-d1-mini-esp8266/
 byte cmd[9] = {0xFF,0x01,0x86,0x00,0x00,0x00,0x00,0x00,0x79}; // official datasheet w/byte commands: https://www.winsen-sensor.com/d/files/MH-Z19B.pdf
 //byte cmd_conf[9] = {0xFF,0x01,0x99,0x00,0x00,0x00,0x13,0x88,0xCB}; //5000ppm range - a list of useful byte cmds: https://revspace.nl/MHZ19
 char result_raw[32];
 unsigned char response[9];
-int ppm=0;
 
-//connect LED (using 1.3' I2C SH1106)
+int ppm=0;
+long millisMeasure=0;
+long millisCurrent=0;
+
+// connect LED (using 1.3' I2C SH1106)
 SH1106Wire display(0x3c, 4, 14);     // start address, SDA->D2, SCL->D5
 
 void setup()
 {
 
-    //led init
+    // led init
     display.init();
     display.flipScreenVertically();
-    display.clear();
     
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.setFont(ArialMT_Plain_16);
-    display.drawString(0, 10, "Initializing...");
-    display.display();
+    drawText("Initializing..."); 
     delay(5000);
     
     Serial.begin(115200); // WEMOS works at 115200
     Serial.println("Wemos 115200 init");
-    display.clear();
-    display.drawString(0, 10, "Wemos > 115200");
-    display.display();
+    drawText("Wemos > 115200");
     delay(5000);
 
     //CO2 init
     mySerial.begin(9600); // MH-Z19b works at 9600                           
     Serial.println("CO2 9600 init");
-    Serial.println("delay 20 AFTER mzh init"); 
-    display.clear();
-    display.drawString(0, 10, "MH-Z19b > 9600");
-    display.display();
-    delay(5000);
-
-    display.clear();
-    display.drawString(0, 10, "Set conf > 5000ppm");
-    display.display();
+    drawText("MH-Z19b > 9600");
     delay(5000);
 
     //mySerial.write(cmd_conf, 9); // uncomment and change cmd_conf for setting up measurement range (default 0-5000)
 
-    display.clear();
-    display.drawString(0, 10, "CO2 conf setup");
-    display.display();
+    drawText("PPM > 0-5000");
     delay(5000);
+
+    //WIFI setup
+    drawText("Connecting WIFI");
+    delay(5000);
+    
+    Serial.println("Connecting to " + String(ssid) + " via pass " + String(pass));
+    while (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Couldn't connect");
+      delay(1000);
+    }
+    Serial.println(WiFi.status());
+    Serial.println(WiFi.localIP());
+
+    drawText(WiFi.localIP().toString());
+    delay(5000);
+
+    //WS setup
+    server.on ("/", WebServer);    
+    server.begin(); 
+    Serial.println("WS ready");
+
+    drawText("WS ready");
+    delay(5000);
+    
 }
 
-void drawText() {
+void drawText( String s) {
 
+    display.clear();
     display.setTextAlignment(TEXT_ALIGN_LEFT);
     display.setFont(ArialMT_Plain_16);
-    display.drawString(0, 10, "CO2: " + String(ppm) + " ppm");
+    display.drawString(0, 10, s);
+    display.display();
     
 }
 
 void getCO2() {
-
+    
     Serial.println("Checking Serial2");
     Serial.println(mySerial.available());
     
@@ -86,17 +115,46 @@ void getCO2() {
     ppm = (256 * responseHigh) + responseLow;
         
     Serial.println("CO2 PPM:" + String(ppm)); 
+    sendWSData("CO2: " + String(ppm));
 
+    millisMeasure = millis();
+    
+}
+
+void WebServer() {
+  
+  Serial.println("ws reply");
+  String reply = "<!DOCTYPE HTML>";
+  reply += "<html><hr>";
+  for (int i = 0; i < 1000; i++) {
+    reply += i + 1;
+    reply += ". ";
+    reply += wsDataArray[i];
+    reply += "<br>";
+  }
+  reply += "<hr></html>";
+  server.send (200, "text/html", reply);
+}
+
+void sendWSData(String s) {
+
+  for (int i = 999; i > 0; i--) {
+    wsDataArray[i] = wsDataArray[i - 1];
+  }
+  wsDataArray[0] = s;
+  
 }
 
 void loop()
-{
-
-    getCO2();
+{   
+    server.handleClient();
     
-    display.clear();
-    drawText();
-    display.display();
+    drawText("CO2: " + String(ppm) + " ppm");
 
-    delay(30000); // min delay recommended 10s not to overload MH-Z19b sensor
+    if (millisMeasure == 0 || (millis() - millisMeasure) > 30000) // min delay recommended 10s not to overload MH-Z19b sensor
+    {
+      getCO2();
+      Serial.println("call getCO2()"); 
+    }
+
 }
