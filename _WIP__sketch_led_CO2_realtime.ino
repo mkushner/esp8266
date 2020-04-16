@@ -1,26 +1,26 @@
 #include <Arduino.h>                                       
 #include <SoftwareSerial.h>
-#include <Wire.h>
 #include "SH1106Wire.h"
-#include <ESP8266WiFi.h> // http://esp8266.github.io/Arduino/versions/2.0.0/doc/libraries.html#wifi-esp8266wifi-library
+#include <ESP8266WiFi.h>    // http://esp8266.github.io/Arduino/versions/2.0.0/doc/libraries.html#wifi-esp8266wifi-library
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
 
-const bool DEBUG = false; // true for Serial output
+const bool DEBUG = false;   // true for Serial output
 const int INTERVAL = 30000; // ms between measurement
 
 // setup WIFI
 const char* ssid = "ssid";
 const char* pass = "pass";
 
+// setup WS
 ESP8266WebServer server(80);
 int status = WL_IDLE_STATUS;
-String wsDataArray[1000];
+String wsDataArray[1000];   // local WS cache 1000 measures
                                            
 // connect MH-Z19b via digitalPin 
-SoftwareSerial mySerial(13, 15);  //Rx->D8, Tx->D7 - actual pinout here https://chewett.co.uk/blog/1066/pin-numbering-for-wemos-d1-mini-esp8266/
-byte cmd[9] = {0xFF,0x01,0x86,0x00,0x00,0x00,0x00,0x00,0x79}; // official datasheet w/byte commands: https://www.winsen-sensor.com/d/files/MH-Z19B.pdf
-//byte cmd_conf[9] = {0xFF,0x01,0x99,0x00,0x00,0x00,0x13,0x88,0xCB}; //5000ppm range - a list of useful byte cmds: https://revspace.nl/MHZ19
+SoftwareSerial mySerial(13, 15);                                      //Rx->D8, Tx->D7 - actual pinout here https://chewett.co.uk/blog/1066/pin-numbering-for-wemos-d1-mini-esp8266/
+byte cmd[9] = {0xFF,0x01,0x86,0x00,0x00,0x00,0x00,0x00,0x79};         // official datasheet w/byte commands: https://www.winsen-sensor.com/d/files/MH-Z19B.pdf
+//byte cmd_conf[9] = {0xFF,0x01,0x99,0x00,0x00,0x00,0x13,0x88,0xCB};  //5000ppm range - a list of useful byte cmds: https://revspace.nl/MHZ19
 char result_raw[32];
 unsigned char response[9];
 int ppm=0;
@@ -30,37 +30,43 @@ long millisCurrent=0;
 // connect LED (using 1.3' I2C SH1106)
 SH1106Wire display(0x3c, 4, 14);     // start address, SDA->D2, SCL->D5
 
+
 void setup()
 {
 
-    // led init
+    // LED init in DEBUG mode
+    if (DEBUG) {
+    pinMode(LED_BUILTIN, OUTPUT);
+    }
+    
+    // OLED init
     display.init();
     display.flipScreenVertically();
     
     drawText("Initializing..."); 
     delay(5000);
 
-    Serial.begin(115200); // WEMOS works at 115200
+    Serial.begin(115200);   // WEMOS works at 115200
     if (DEBUG) {
       Serial.println("Wemos 115200 init"); 
     }
-    drawText("Wemos = 115200");
+    drawText("Wemos: 115200");
     delay(5000);
 
     //CO2 init
-    mySerial.begin(9600); // MH-Z19b works at 9600                           
+    mySerial.begin(9600);   // MH-Z19b works at 9600                           
     if (DEBUG) {
       Serial.println("CO2 9600 init");
     }
-    drawText("MH-Z19b = 9600");
+    drawText("MH-Z19b: 9600");
     delay(5000);
 
-    //mySerial.write(cmd_conf, 9); // uncomment and change cmd_conf for setting up measurement range (default 0-5000)
+    //mySerial.write(cmd_conf, 9);  // uncomment and change cmd_conf for setting up measurement range (default 0-5000)
 
-    drawText("PPM = 0-5000");
+    drawText("PPM: 0-5000");
     delay(5000);
 
-    drawText("Interval = " + String((INTERVAL/1000)) + "s");
+    drawText("Interval: " + String((INTERVAL/1000)) + "s");
     delay(5000);
 
     //WIFI setup
@@ -70,32 +76,46 @@ void setup()
     if (DEBUG) {
     Serial.println("Connecting to " + String(ssid) + " via pass " + String(pass));
     }
-    while (WiFi.status() != WL_CONNECTED) {
+
+    int wifi_try = 0;
+    while ((WiFi.status() != WL_CONNECTED) && wifi_try<5) {
       if (DEBUG) {
-        Serial.println("Couldn't connect");
+        Serial.println("Couldn't connect on try " + String(wifi_try));
       }
+      wifi_try ++;
       delay(1000);
     }
 
-    if (DEBUG) {
-    Serial.println(WiFi.status());
-    Serial.println(WiFi.localIP());
+    if (WiFi.status() != WL_CONNECTED) {
+      if (DEBUG) {
+      Serial.println("Error connecting to WIFI after " + String(wifi_try) + " tries");
+      Serial.println("WebServer not supported");
+      }
+      drawText("WIFI not found");
+      delay(5000);
+      drawText("WS not supported");
+      delay(5000);
     }
-
-    drawText(WiFi.localIP().toString());
-    delay(5000);
-
-    //WS setup
-    server.on ("/", WebServer);    
-    server.begin();
-
-    if (DEBUG) {
-    Serial.println("WS ready");
-    }
-
-    drawText("WS ready");
-    delay(5000);
+    else {
+      if (DEBUG) {
+        Serial.println(WiFi.status());
+        Serial.println(WiFi.localIP());
+        }
     
+        drawText(WiFi.localIP().toString());
+        delay(5000);
+    
+        //WS setup
+        server.on ("/", WebServer);    
+        server.begin();
+    
+        if (DEBUG) {
+        Serial.println("WS ready");
+        }
+    
+        drawText("WS ready");
+        delay(5000);
+    }
 }
 
 void drawText( String s) {
@@ -110,6 +130,10 @@ void drawText( String s) {
 
 void getCO2() {
 
+    if (DEBUG) {
+    digitalWrite(LED_BUILTIN, LOW);
+    }
+        
     if (DEBUG) {
     Serial.println("Checking Serial2");
     Serial.println(mySerial.available());
@@ -142,7 +166,10 @@ void getCO2() {
     sendWSData(String(ppm));
 
     millisMeasure = millis();
-    
+
+    if (DEBUG) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    }
 }
 
 void WebServer() {
@@ -175,11 +202,13 @@ void sendWSData(String s) {
 
 void loop()
 {   
+    if (WiFi.status() == WL_CONNECTED) {
     server.handleClient();
+    }
     
     drawText("CO2: " + String(ppm) + " ppm");
 
-    if (millisMeasure == 0 || (millis() - millisMeasure) > INTERVAL) // min delay recommended 10s not to overload MH-Z19b sensor
+    if ((millis() - millisMeasure) > INTERVAL) // min delay recommended 10s not to overload MH-Z19b sensor
     {
       getCO2();
       if (DEBUG) {
