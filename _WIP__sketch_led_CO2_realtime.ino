@@ -7,19 +7,21 @@
 #include <SDS011.h>
 #include "ThingSpeak.h"
 
-const bool DEBUG = false;          // true for Serial output
-const int  INTERVAL = 60000;      // ms between measurements
-const bool localWS = true;        // run localCache ws  
-const bool cloudWS = true;        // run ThingSpeak integration
+const bool DEBUG = true;              // true for Serial output
+const int  INTERVAL_CO = 60000;       // ms between CO measures
+const int  INTERVAL_PM = 300000;      // ms between PM measures - not less than WAKEUP
+const int  INTERVAL_WAKEUP = 30000;   // ms for warmup after sleep
+const bool localWS = false;           // run localCache ws  
+const bool cloudWS = true;            // run ThingSpeak integration
 
 // setup WIFI
-const char* ssid = "wifi ssid";
-const char* pass = "wifi pass";
+const char* ssid = "ssid";
+const char* pass = "pass";
 WiFiClient client;
 
 // setup ThingSpeak
-unsigned int channelID = "TS channel";           // ThingSpeak channel ID
-const char * APIkey = "TS api";  // ThingSpeak WriteAPI key
+unsigned int channelID = "channelID";           // ThingSpeak channel ID
+const char * APIkey = "APIkey";  // ThingSpeak WriteAPI key
 
 // setup WS
 ESP8266WebServer server(80);
@@ -33,12 +35,12 @@ byte cmd[9] = {0xFF,0x01,0x86,0x00,0x00,0x00,0x00,0x00,0x79};         // officia
 char result_raw[32];
 unsigned char response[9];
 int ppm=0;
-long millisMeasure=0;
-long millisCurrent=0;
+long millisMeasureCO=0;
 
 // connect SDS011 via digitalPin
 SDS011 mySDS;
 float p10, p25 = 0;
+long millisMeasurePM=0;
 
 // connect LED (using 1.3' I2C SH1106) via SDA/SCK
 SH1106Wire display(0x3c, 4, 14);     // start address, SDA->D2, SCL->D5
@@ -70,11 +72,11 @@ void setup()
     drawText("Reading config");
     delay(5000);
     drawText("DEBUG mode: " + String(DEBUG));
-    delay(1000);
+    delay(2000);
     drawText("localWS support: " + String(localWS));
-    delay(1000);
+    delay(2000);
     drawText("cloudWS support: " + String(cloudWS));
-    delay(1000);
+    delay(2000);
 
     // CO2 init
     myMHZ.begin(9600);   // MH-Z19b works at 9600                           
@@ -87,19 +89,19 @@ void setup()
     //myMHZ.write(cmd_conf, 9);  // uncomment and change cmd_conf for setting up measurement range (default 0-5000)
 
     if (DEBUG) {
-      Serial.println("PPM 0-500");
+      Serial.println("PPM 0-5000");
     }
     drawText("PPM: 0-5000");
     delay(5000);
 
     if (DEBUG) {
-      Serial.println("Interval: " + String(INTERVAL/1000) + " s");
+      Serial.println("Interval: " + String(INTERVAL_CO/1000) + "s");
     }
-    drawText("Interval: " + String(INTERVAL/1000) + "s");
+    drawText("Interval: " + String(INTERVAL_CO/1000) + "s");
     delay(5000);
 
     // SDS011 init
-    mySDS.begin(5, 2); //D1, D4, Rx, Tx
+    mySDS.begin(5, 2); //D1, D4, Tx, Rx
 
     if (DEBUG) {
       Serial.println("PM sensor init");
@@ -108,6 +110,7 @@ void setup()
     delay(5000);
 
     // WIFI setup
+    WiFi.begin(ssid,pass);
     if (DEBUG) {
       Serial.println("Connecting WIFI");
     }
@@ -181,7 +184,7 @@ void drawText( String s) {
 }
 
 void getPM() {
-  
+    
     int error = mySDS.read(&p25, &p10);
     if (!error) {
       Serial.println("P2.5: " + String(p25));
@@ -191,7 +194,8 @@ void getPM() {
     else {
       Serial.println("error reading PM");
     }
-  
+
+    millisMeasurePM = millis();
   }
 
 void getCO2() {
@@ -230,7 +234,7 @@ void getCO2() {
     Serial.println("CO2 PPM:" + String(ppm));
     }
     
-    millisMeasure = millis();
+    millisMeasureCO = millis();
 
     if (DEBUG) {
     digitalWrite(LED_BUILTIN, HIGH);
@@ -265,9 +269,13 @@ void sendWSData(String s) {
   
 }
 
-void sendTSData( String s) {
+void sendTSData() {
+
+  ThingSpeak.setField(1, ppm);
+  ThingSpeak.setField(2, p25);
+  ThingSpeak.setField(3, p10);
   
-  int httpCode = ThingSpeak.writeField(channelID, 1, s, APIkey);
+  int httpCode = ThingSpeak.writeFields(channelID, APIkey);
   
   if (httpCode == 200) {
     if (DEBUG) {
@@ -286,7 +294,6 @@ void loop()
     server.handleClient();
     }
     
-    //drawText("CO2: " + String(ppm) + " ppm");
     display.clear();
     display.setTextAlignment(TEXT_ALIGN_LEFT);
     display.setFont(ArialMT_Plain_10);
@@ -294,18 +301,17 @@ void loop()
     display.drawString(0, 30, "P10: " + String(p10) + ", P2.5: " + String(p25));
     display.display();
 
-    if ((millis() - millisMeasure) > INTERVAL) // min delay recommended 10s not to overload MH-Z19b sensor
+
+    if ((millis() - millisMeasureCO) > INTERVAL_CO) // min delay recommended 10s not to overload MH-Z19b sensor
     {
       if (DEBUG) {
-        Serial.println("call getCO2()"); 
+        Serial.println("enter CO cycle on " + String(millis() - millisMeasureCO)); 
       }
-      getCO2();
       
       if (DEBUG) {
-        Serial.println("call getPM()"); 
+        Serial.println("call getCO2() on " + String(millis() - millisMeasureCO)); 
       }
-      getPM();
-
+      getCO2();
 
       if (localWS) {
         if (DEBUG) {
@@ -318,9 +324,32 @@ void loop()
         if (DEBUG) {
           Serial.println("write to TS");
         }
-        sendTSData(String(ppm));
+        sendTSData();
       }
  
     }
 
+    if ((millis() - millisMeasurePM) > INTERVAL_PM) {
+
+      if (DEBUG) {
+        Serial.println("enter PM cycle on " + String(millis() - millisMeasurePM)); 
+      }
+
+      if (DEBUG) {
+        Serial.println("call wakeup() on " + String(millis() - millisMeasurePM)); 
+      }
+      mySDS.wakeup();
+      delay(INTERVAL_WAKEUP);
+  
+      if (DEBUG) {
+        Serial.println("call getPM() on " + String(millis() - millisMeasurePM)); 
+      }
+      getPM();
+
+      if (DEBUG) {
+        Serial.println("call sleep() on " + String(millis() - millisMeasurePM)); 
+      }  
+      mySDS.sleep();
+      
+    }  
 }
