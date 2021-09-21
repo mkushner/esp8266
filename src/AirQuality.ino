@@ -54,7 +54,7 @@ void getCloudConfig () {
   int httpCode = https.GET();
 
   if (httpCode > 0) {
-    Serial.println("GET error code: " + String(httpCode));
+    Serial.println("GET response code: " + String(httpCode));
   }
   
 // Parse response
