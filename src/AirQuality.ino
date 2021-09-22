@@ -8,81 +8,49 @@
 #include <ArduinoJson.h>
 #include <StreamUtils.h>
 
-// basic measurement setup
+//basic measurement setup
   bool DEBUG = true;                           // true for Serial output
   bool INTERVAL_M = true;                      // interval measurement
   int  INTERVAL_CO = 300000;                   // ms between CO measures
   int  INTERVAL_PM = 600000;                   // ms between PM measures - not less than WAKEUP
   int  INTERVAL_WAKEUP = 20000;                // ms for warmup after sleep
   bool cloudWS = true;                         // run ThingSpeak integration
+  bool readCO = true;                          // read CO2 sensor data
+  bool readPM = true;                          // read PMs sensor data
 
 // setup WIFI
   const char* ssid = <"SSID">;
   const char* pass = <"PASS">;
   bool wifisignal = false;
   WiFiClient client;
+  int INTERVAL_CFG = 600000;
+  unsigned long millisMeasureCFG = 0;
 
 // setup ThingSpeak
   int channelID = <ID>;                       // ThingSpeak channel ID
   const char * APIkey = <"key">;              // ThingSpeak WriteAPI key
                                            
-// connect MH-Z19b via digitalPin 
+//connect MH-Z19b via digitalPin 
   SoftwareSerial myMHZ(13, 15);                                                    //  actual pinout here https://chewett.co.uk/blog/1066/pin-numbering-for-wemos-d1-mini-esp8266/
   byte MHZcmd[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};         // official datasheet w/byte commands: https://www.winsen-sensor.com/d/files/MH-Z19B.pdf
   //byte cmd_conf[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x13, 0x88, 0xCB};     // 5000ppm range - a list of useful byte cmds: https://revspace.nl/MHZ19
-  //byte cmd_conf[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F};     // 2000ppm range
+  //byte cmd_conf[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F};    // 2000ppm range
   char result_raw[32];
   unsigned char response[9];
   int ppm=0;
   unsigned long millisMeasureCO=0;
 
-// connect SDS011 via digitalPin
+//connect SDS011 via digitalPin
   SDS011 mySDS;
   float p10, p25 = 0;
   unsigned long millisMeasurePM=0;
-
-void getCloudConfig () {
-
-  std::unique_ptr<BearSSL::WiFiClientSecure>client(new BearSSL::WiFiClientSecure);
-  client->setInsecure();
-
-  HTTPClient https;
-  
-// Send request
-  https.useHTTP10(true);
-  https.begin(*client, "URL");
-  int httpCode = https.GET();
-
-  if (httpCode > 0) {
-    Serial.println("GET response code: " + String(httpCode));
-  }
-  
-// Parse response
-  StaticJsonDocument<500> doc;
-  DeserializationError error = deserializeJson(doc, https.getStream());
-
-  if (error) {
-    Serial.println(error.f_str());
-  }
-  
-// Read cloud config values
-  DEBUG = doc["DEBUG"].as<bool>();
-  INTERVAL_M = doc["INTERVAL_M"].as<bool>();
-  INTERVAL_CO = doc["timeoutCO"].as<int>();
-  INTERVAL_PM = doc["timeoutPM"].as<int>();
-  INTERVAL_WAKEUP = doc["timeoutWake"].as<int>();
-  cloudWS = doc["cloudWS"].as<bool>();         
-
-// Disconnect
-  https.end();
-}
 
 void setup() {
   delay(5000);  
   Serial.begin(9600);                       // WEMOS works at 9600
   Serial.println("Wemos 9600 init"); 
 
-// WIFI setup
+//WIFI setup
   Serial.println("Connecting WIFI");
   WiFi.begin(ssid,pass);
     
@@ -108,43 +76,13 @@ void setup() {
     Serial.println("Connected to WIFI on " + String(wifi_try) + " try");
     Serial.println(WiFi.localIP());
     wifisignal = true;
-
-  //begin reading cloud configuration file
-    std::unique_ptr<BearSSL::WiFiClientSecure>client(new BearSSL::WiFiClientSecure);
-    client->setInsecure();
-    HTTPClient https;
-    
-  // Send request
-    https.useHTTP10(true);
-    https.begin(*client, "https://mkushner.github.io/cloudConfig.json");
-    int httpCode = https.GET();
-  
-    if (httpCode > 0) {
-      Serial.println("GET response code: " + String(httpCode));
+    getCloudConfig();
     }
-    
-  // Parse response
-    StaticJsonDocument<500> doc;
-    DeserializationError error = deserializeJson(doc, https.getStream());
   
-    if (error) {
-      Serial.println(error.f_str());
-    }
-    
-  // Read cloud config values
-    DEBUG = doc["DEBUG"].as<bool>();
-    INTERVAL_M = doc["INTERVAL_M"].as<bool>();
-    INTERVAL_CO = doc["timeoutCO"].as<int>();
-    INTERVAL_PM = doc["timeoutPM"].as<int>();
-    INTERVAL_WAKEUP = doc["timeoutWake"].as<int>();
-    cloudWS = doc["cloudWS"].as<bool>();
-  
-  // Disconnect
-    https.end();
-    }
-
   Serial.println("DEBUG mode: " + String(DEBUG));
   Serial.println("cloudWS support: " + String(cloudWS));
+  Serial.println("CO2 sensor support: " + String(readCO));
+  Serial.println("PM sensor support: " + String(readPM));
 
 //TS setup
   if (cloudWS) {
@@ -154,13 +92,13 @@ void setup() {
       }
     }
 
-// CO2 init
+//CO2 init
   myMHZ.begin(9600);   // MH-Z19b works at 9600                           
   if (DEBUG) {
-    Serial.println("CO2 9600 init");
+    Serial.println("call CO2 sensor at 9600");
     }
 
-  //myMHZ.write(cmd_conf, 9);                 // uncomment and change cmd_conf for setting up measurement range (default 0-5000)
+//myMHZ.write(cmd_conf, 9);                          // uncomment and change cmd_conf for setting up measurement range (default 0-5000)
 
   if (DEBUG) {
     Serial.println("PPM 0-5000");
@@ -177,32 +115,78 @@ void setup() {
     Serial.println("Interval_PM: " + String(INTERVAL_PM/1000) + "s");
     }
 
-// SDS011 init
+//SDS011 init
   if (DEBUG) {
-    Serial.println("PM sensor init");
+    Serial.println("call PM sensor at 9600");
     }
   mySDS.begin(4, 14); //D1, D4, Tx, Rx
 
   if (DEBUG) {
-    Serial.println("delay 5s to init sensors");
+    Serial.println("delay 5s to completely init sensors");
     }
   delay(5000);   
+  
+}
+
+void getCloudConfig() {
+
+//begin reading cloud configuration file
+  std::unique_ptr<BearSSL::WiFiClientSecure>getClient(new BearSSL::WiFiClientSecure);
+  getClient->setInsecure();
+  HTTPClient https;
+    
+//Send request
+  https.useHTTP10(true);
+  https.begin(*getClient, "https://mkushner.github.io/cloudConfig.json");
+  int httpCode = https.GET();
+  
+  if (httpCode > 0) {
+    Serial.println("GET response code: " + String(httpCode));
+    }
+    
+//Parse response
+  StaticJsonDocument<500> doc;
+  DeserializationError error = deserializeJson(doc, https.getStream());
+  
+  if (error) {
+    Serial.println(error.f_str());
+    }
+  else {
+    Serial.println("configuration file found, reading...");
+    }
+    
+//Read cloud config values
+  DEBUG = doc["DEBUG"].as<bool>();
+  INTERVAL_M = doc["INTERVAL_M"].as<bool>();
+  INTERVAL_CO = doc["timeoutCO"].as<int>();
+  INTERVAL_PM = doc["timeoutPM"].as<int>();
+  INTERVAL_WAKEUP = doc["timeoutWake"].as<int>();
+  cloudWS = doc["cloudWS"].as<bool>();
+  INTERVAL_CFG = doc["timeoutCFG"].as<int>();
+  readCO = doc["readCO"].as<bool>();
+  readPM = doc["readPM"].as<bool>();
+  
+//Disconnect
+  https.end();
+
+  millisMeasureCFG = millis();
+
 }
 
 void getPM() {
 
-// call wakeup() timing output
+//call wakeup() timing output
   if (DEBUG && INTERVAL_M) {
     Serial.println("call wakeup() on millis=" + String(millis()) + " millisMeasurePM=" + String(millisMeasurePM)); 
     }
 
-// wakeup if itervals are on
+//wakeup if itervals are on
   if (INTERVAL_M) {
     mySDS.wakeup();
     delay(INTERVAL_WAKEUP);
     }
 
-// read data from the sensor
+//read data from the sensor
   int error = mySDS.read(&p25, &p10);
 
   if (DEBUG) { 
@@ -215,26 +199,26 @@ void getPM() {
       } 
     }
 
-// call sleep() timing
+//call sleep() timing
   if (DEBUG && INTERVAL_M) {
     Serial.println("call sleep() on millis=" + String(millis()) + " millisMeasurePM=" + String(millisMeasurePM)); 
     }
 
-// sleep if itervals are turned on
+//sleep if itervals are turned on
   if (INTERVAL_M) {
   mySDS.sleep();
   }
 
-// write getPM timing
+//write getPM timing
   millisMeasurePM = millis();
 }
 
 void getCO2() {
 
   if (DEBUG) {
-    Serial.println("Checking Serial");
+    Serial.println("Checking Serial2");
     Serial.println(myMHZ.available());
-    Serial.println("Sending Serial CMD");
+    Serial.println("Sending Serial2 CMD");
     } 
   else {
     myMHZ.available(); // handle 1-byte offset 
@@ -268,7 +252,7 @@ void getCO2() {
   unsigned int responseHigh = (unsigned int) response[2];
   unsigned int responseLow = (unsigned int) response[3];
 
-// check range consistency
+//check range consistency
   if ( ((256 * responseHigh) + responseLow) < 2000) {
     ppm = (256 * responseHigh) + responseLow;
     }
@@ -277,7 +261,7 @@ void getCO2() {
     Serial.println("CO2 PPM:" + String(ppm));
     }
 
-// write getCO timing
+//write getCO timing
   millisMeasureCO = millis();  
 }
 
@@ -309,7 +293,7 @@ void sendTSData(int dataSet) {
 
 void loop() {   
   
-  if ( ( millis() - millisMeasureCO ) > INTERVAL_CO )  {         // min delay recommended 10s not to overload MH-Z19b sensor
+  if ( readCO && ( millisMeasureCO == 0 || ((millis() - millisMeasureCO) > INTERVAL_CO)) )  {         // min delay recommended 10s not to overload MH-Z19b sensor
     if (DEBUG) {
       Serial.println("called  getCO2() on millis=" + String(millis()) + " millisMeasureCO=" + String(millisMeasureCO) ); 
       }
@@ -323,7 +307,7 @@ void loop() {
       }
     }
 
-  if ( ( millis() - millisMeasurePM ) > INTERVAL_PM ) {
+  if ( readPM && ( millisMeasurePM == 0 || (( millis() - millisMeasurePM ) > INTERVAL_PM )) ) {
     if (DEBUG) {
       Serial.println("called getPM() on millis=" + String(millis()) + " millisMeasurePM=" + String(millisMeasurePM)); 
       }
@@ -335,5 +319,13 @@ void loop() {
         }
       sendTSData(2);
       }
-    }  
+    }
+
+  if ( ( millis() - millisMeasureCFG ) > INTERVAL_CFG )  {         
+    if (DEBUG) {
+      Serial.println("called  getCloudConfig() on millis=" + String(millis()) + " millisMeasureCFG=" + String(millisMeasureCFG) ); 
+      }
+    getCloudConfig();
+    }
+    
 }
