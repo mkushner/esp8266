@@ -18,23 +18,24 @@
   bool readCO = true;                          // read CO2 sensor data
   bool readPM = true;                          // read PMs sensor data
 
-// setup WIFI
+//setup WIFI
   const char* ssid = <"SSID">;
   const char* pass = <"PASS">;
+  const char * cfg = <"URL">;
   bool wifisignal = false;
   WiFiClient client;
   int INTERVAL_CFG = 600000;
   unsigned long millisMeasureCFG = 0;
 
-// setup ThingSpeak
-  int channelID = <ID>;                       // ThingSpeak channel ID
-  const char * APIkey = <"key">;              // ThingSpeak WriteAPI key
+//setup ThingSpeak
+  int channelID = <ID>;                     // ThingSpeak channel ID
+  const char * APIkey = <"KEY">;            // ThingSpeak WriteAPI key
                                            
 //connect MH-Z19b via digitalPin 
-  SoftwareSerial myMHZ(13, 15);                                                    //  actual pinout here https://chewett.co.uk/blog/1066/pin-numbering-for-wemos-d1-mini-esp8266/
+  SoftwareSerial myMHZ(13, 15);                                                    // actual pinout here https://chewett.co.uk/blog/1066/pin-numbering-for-wemos-d1-mini-esp8266/
   byte MHZcmd[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};         // official datasheet w/byte commands: https://www.winsen-sensor.com/d/files/MH-Z19B.pdf
   //byte cmd_conf[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x13, 0x88, 0xCB};     // 5000ppm range - a list of useful byte cmds: https://revspace.nl/MHZ19
-  //byte cmd_conf[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F};    // 2000ppm range
+  //byte cmd_conf[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F};     // 2000ppm range
   char result_raw[32];
   unsigned char response[9];
   int ppm=0;
@@ -137,7 +138,7 @@ void getCloudConfig() {
     
 //Send request
   https.useHTTP10(true);
-  https.begin(*getClient, "https://mkushner.github.io/cloudConfig.json");
+  https.begin(*getClient, cfg);
   int httpCode = https.GET();
   
   if (httpCode > 0) {
@@ -251,12 +252,8 @@ void getCO2() {
 
   unsigned int responseHigh = (unsigned int) response[2];
   unsigned int responseLow = (unsigned int) response[3];
-
-//check range consistency
-  if ( ((256 * responseHigh) + responseLow) < 2000) {
-    ppm = (256 * responseHigh) + responseLow;
-    }
-
+  ppm = (256 * responseHigh) + responseLow; 
+  
   if (DEBUG) {
     Serial.println("CO2 PPM:" + String(ppm));
     }
@@ -269,11 +266,11 @@ void sendTSData(int dataSet) {
 
   switch (dataSet) {
     case 1:
-      ThingSpeak.setField(1, ppm);
+      ThingSpeak.setField(1, (ppm<2000) ? ppm : 2000);  // data consistency
       break;
     case 2:
-      ThingSpeak.setField(2, p25);
-      ThingSpeak.setField(3, p10);
+      ThingSpeak.setField(4, (p25<50) ? p25 : 50);      // data consistency - CHECK 2-3 internal and 4-5 external PM fields 
+      ThingSpeak.setField(5, (p10<100) ? p10 : 100);    // data consistency
       break;
     default:
       Serial.println("Error reading dataSet switcher: expected 1/2 got " + String(dataSet));
@@ -289,6 +286,8 @@ void sendTSData(int dataSet) {
       Serial.println("error sending TS data: status " + String(httpCode)); 
       }
     }
+
+  delay(1000); // handle 2s delay to fit request limits
 }
 
 void loop() {   
